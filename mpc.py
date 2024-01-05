@@ -30,11 +30,14 @@ def rabin_miller_fast(n, k=40):
 			return False
 	return rabin_miller(n, k)
 
+def randbits(n):
+	return random.randrange(2**(n-1), 2**n-1)
+
 def gen_safe_prime(n):
 	while True:
 		# generate n-2 bits, always make the last 2 bits 11 (even numbers aren't prime
 		# also we want a safe prime and safe primes are always 3 mod 4
-		p = random.randrange(2**(n-3)+1, 2**(n-2)-1)
+		p = randbits(n-2)
 		p = 4 * p + 3
 		if not rabin_miller_fast(p): # primality test
 			print('.', end='', flush=True)
@@ -67,8 +70,7 @@ def modinv(a, m):
 	return x % m
 
 def gen_rsa_params(n=2048):
-	p = gen_safe_prime(n//2)
-	q = gen_safe_prime(n//2)
+	p, q = gen_safe_prime(n//2), gen_safe_prime(n//2)
 	N = p * q
 	e = 65537
 	phi = (p-1)*(q-1)
@@ -77,9 +79,47 @@ def gen_rsa_params(n=2048):
 	d = modinv(e, phi)
 	return e,d,N
 
-def oblivious_transfer(m0, m1, e, d, N):
-	
+def oblivious_transfer_alice(m0, m1, n=2048):
+	e, d, N = gen_rsa_params(n)
+	if m0 >= N or m1 >= N:
+		raise ValueError('N too low')
+	yield (e, N)
+	x0, x1 = randbits(n), randbits(n)
+	v = yield (x0, x1)
+	k0 = pow(v - x0, d, N)
+	k1 = pow(v - x1, d, N)
+	m0k = (m0 + k0) % N
+	m1k = (m1 + k1) % N
+	yield m0k, m1k
+
+def oblivious_transfer_bob(b, n=2048):
+	if not b in (0, 1):
+		raise ValueError('b must be 0 or 1')
+	e, N = yield
+	x0, x1 = yield
+	k = randbits(n)
+	v = ((x0, x1)[b] + pow(k, e, N)) % N
+	m0k, m1k = yield v
+	mb = ((m0k, m1k)[b] - k) % N
+	yield mb
 
 if __name__ == '__main__':
-	e, d, N = gen_rsa_params(2048)
-	print(e,d,N)
+	m0 = 9001
+	m1 = 1337
+
+	alice = oblivious_transfer_alice(m0, m1)
+	bob  = oblivious_transfer_bob(1)
+
+	e, N = next(alice)
+	next(bob)
+	bob.send((e, N))
+
+	x0, x1 = next(alice)
+	v = bob.send((x0, x1))
+
+	m0k, m1k = alice.send(v)
+
+	mb = bob.send((m0k, m1k))
+
+	print('mb', mb)
+
