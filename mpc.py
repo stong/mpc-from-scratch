@@ -81,8 +81,11 @@ def gen_rsa_params(n=2048):
 
 # note: textbook rsa has issues, padding should be used
 
-def oblivious_transfer_alice(m0, m1, n=2048):
-	e, d, N = gen_rsa_params(n)
+def oblivious_transfer_alice(m0, m1, n=2048, e=None, d=None, N=None):
+	# generate new rsa parameters if not specified, otherwise use provided
+	if e is None or d is None or N is None:
+		e, d, N = gen_rsa_params(n)
+
 	if m0 >= N or m1 >= N:
 		raise ValueError('N too low')
 	yield (e, N)
@@ -104,6 +107,20 @@ def oblivious_transfer_bob(b, n=2048):
 	m0k, m1k = yield v
 	mb = ((m0k, m1k)[b] - k) % N
 	yield mb
+
+# 1-2 oblivious transfer
+def oblivious_transfer(alice, bob):
+	e, N = next(alice)
+	next(bob)
+	bob.send((e, N))
+
+	x0, x1 = next(alice)
+	v = bob.send((x0, x1))
+
+	m0k, m1k = alice.send(v)
+
+	mb = bob.send((m0k, m1k))
+	return mb
 
 
 # quick and dirty verilog parser
@@ -162,13 +179,11 @@ def parse_verilog(filename):
 						raise ValueError('unsupported statement:', l)
 					rhs = ('const_' + val[1],)
 				case _:
-					print(rhs)
 					raise ValueError('unsupported statement:', l)
 			circuit[lhs] = rhs
 			for var in rhs[1:]:
 				if var not in circuit:
 					raise ValueError('undefined variable:', var, 'in statement', l)
-			# print(lhs,rhs)
 		else:
 			raise ValueError('unsupported statement:', l)
 	for wire, value in circuit.items():
@@ -223,7 +238,7 @@ def label_truth_table(output_name, gate, input_names, labels, k=128):
 	for inp_values in itertools.product((0,1), repeat=len(input_names)):
 		output_value = functools.reduce(operator.getitem, inp_values, logic_table)
 		output_label = labels[output_name][output_value]
-		input_labels = [labels[input_names[i]][v] for i, v in enumerate(inp_values)]
+		input_labels = [labels[input_name][input_value] for input_name, input_value in zip(input_names, inp_values)]
 		labeled_table.append((output_label, input_labels))
 	return labeled_table
 
@@ -257,7 +272,6 @@ def symmetric_dec(keys, ciphertext, tag, nonce, k=128):
 	cipher = AES.new(key, Crypto.Cipher.AES.MODE_GCM, nonce=nonce)
 	x = unpad(cipher.decrypt_and_verify(ciphertext, tag), 16)
 	x = int.from_bytes(x, 'big')
-	print(x)
 	assert x.bit_length() <= k
 	return x
 
@@ -293,7 +307,6 @@ def garble_circuit(circuit, inputs, outputs, k=128):
 	# we topologically order all the wires. there is a valid topological ordering because circuits are acyclic.
 	# by ordering the wires, we can use the indices as unique ids to refer to each wire
 	wires = topoorder(circuit, inputs, outputs)
-	print('topo order:',wires)
 	wire_index = {wire: i for i, wire in enumerate(wires)}
 
 	for wire_name in wires:
@@ -306,7 +319,6 @@ def garble_circuit(circuit, inputs, outputs, k=128):
 		labeled_table = label_truth_table(wire_name, gate, input_wire_names, labels, k)
 		garbled_table = garble_table(labeled_table)
 
-		print('inputs:',input_wire_names)
 		input_wire_indexes = [wire_index[input_wire] for input_wire in input_wire_names]
 		assert all(i < len(garbled_tables) for i in input_wire_indexes)
 		garbled_tables.append((garbled_table, input_wire_indexes))
@@ -346,54 +358,93 @@ def wire_values(wire_name, value, bitsize):
 	bits = bin(value)[2:].zfill(32)
 	return {f"{wire_name}_{i}": int(bit) for i, bit in enumerate(reversed(bits))}
 
-if __name__ == '__main__':
-	circuit, inputs, outputs = parse_verilog('out.v')
-
-	# alice does this
-	garbled_tables, labels, wire_index = garble_circuit(circuit, inputs, outputs)
+# X is alice's input
+# x = number of bits in the input wire 'x' in the circuit
+# y = number of bits in the input wire 'y' in the circuit
+# n = RSA security bits
+# k = garbled circuits security bits (label size)
+def garbled_circuit_alice(circuits, input_wires, output_wires, X, x_bits=32, y_bits=32, n=2048, k=128):
+	garbled_tables, labels, wire_index = garble_circuit(circuit, input_wires, output_wires)
+	output_indexes = [wire_index[wire] for wire in output_wires]
 
 	# {wire_name: [label_0, label_1], ...} -> {label_0: wire_name=0, label_1: wire_name=1, ...}
 	labels_to_names = dict((v, k + '=' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
 	for k, v in labels_to_names.items(): print(k, '\t', v)
+
+	# setup Alice's input wires
+	alice_input_values = {**wire_values('x', X, x_bits)}
+	print('alice input values:', alice_input_values)
+
+	# map of wire_index -> given label (for alice's wires)
+	alice_input_labels = {wire_index[wire]: labels[wire][alice_input_values[wire]] for wire in input_wires if wire.startswith('x_')}
+
+	# bob also needs to know which wires are his inputs
+	bob_input_indexes = [wire_index[f'y_{i}'] for i in range(y_bits)]
+	# setup the oblivious transfer for bob's input wires
+	ot_alices = []
+	e, d, N = gen_rsa_params(n)
+	for i in range(y_bits):
+		m0, m1 = labels[f'y_{i}'] # get the 0 and 1 labels for bob's input wire 'y'
+		ot_alices.append(oblivious_transfer_alice(m0, m1, n, e, d, N))
+
+	# send parameters to bob and do the oblivious transfer. Bob will reply back with his output labels
+	output_labels = yield labels, garbled_tables, alice_input_labels, bob_input_indexes, output_indexes, ot_alices
+
+	# convert the labels back to plain values
+	output = [labels_to_names[label] for label in output_labels]
+	yield output
+
+# Y is bob's input
+# input_bits = number of bits in the input wire 'y' in the circuit
+def garbled_circuit_bob(Y, y_bits=32, n=2048, k=128):
+	bob_input_values = {**wire_values('y', Y, y_bits)}
+	print('bob input values:', bob_input_values)
+
+	# setup the oblivious transfer for bob's input wires
+	ot_bobs = [oblivious_transfer_bob(bob_input_values[f'y_{i}'], n) for i in range(y_bits)]
+
+	# do the oblivious transfer now. Also, receive the rest of alice's parameters
+	garbled_tables, alice_input_labels, bob_input_indexes, output_indexes, bob_input_labels = yield ot_bobs
+	assert len(bob_input_indexes) == y_bits and len(bob_input_labels) == y_bits
+
+	# boilerplate, go from a list of label values to a dict from wire to label
+	bob_input_labels = dict(zip(bob_input_indexes, bob_input_labels))
 	
-	x = 1185372425
-	y = 1337
+	# now we have all the input labels
+	input_labels = {**alice_input_labels, **bob_input_labels}
+	print('input labels:', input_labels)
 
-	# setup input wires
-	input_values = {**wire_values('x', x, 32), **wire_values('y', y, 32)}
-	print('input values:', input_values)
-
-	# map of wire_index -> given label
-	input_labels = {wire_index[wire]: labels[wire][input_values[wire]] for wire in inputs}
-
-	output_indexes = [wire_index[wire] for wire in outputs]
-	
-	# bob does this
 	output_labels = eval_garbled_circuit(garbled_tables, input_labels, output_indexes)
+	yield output_labels
+
+if __name__ == '__main__':
+	# build with ./oss-cad-suite/bin/yosys -s yosys-script.txt
+	circuit, input_wires, output_wires = parse_verilog('out.v')
+
+	X = 1337
+	Y = pow(X,-1,2**32)
+
+	# setup
+	gc_alice = garbled_circuit_alice(circuit, input_wires, output_wires, X, x_bits=32, y_bits=32)
+	gc_bob = garbled_circuit_bob(Y, y_bits=32)
+
+	# alice garbles the circuit and prepares for an oblivious transfer of bob's input labels
+	labels, garbled_tables, alice_input_labels, bob_input_indexes, output_indexes, ot_alices = next(gc_alice)
+	# bob prepares for an oblivious transfer of all his input labels
+	ot_bobs = next(gc_bob)
+
+	# do the oblivious transfer of all of bobs input wire bits
+	bob_input_labels = [oblivious_transfer(alice, bob) for alice, bob in zip(ot_alices, ot_bobs)]
+	print('bob input labels:', bob_input_labels)
+	# Send bob all the other params from Alice too
+	# then Bob will run the garbled circuit
+	output_labels = gc_bob.send((garbled_tables, alice_input_labels, bob_input_indexes, output_indexes, bob_input_labels))
 	print('output labels:', output_labels)
 
-	# alice does this
-	output = [labels_to_names[label] for label in output_labels]
-	print('final output:', output)
+	# give output labels to alice to get final output
+	output = gc_alice.send(output_labels)
+	for val in output:
+		print(val)
 
 	exit()
-
-	m0 = 9001
-	m1 = 1337
-
-	alice = oblivious_transfer_alice(m0, m1)
-	bob  = oblivious_transfer_bob(1)
-
-	e, N = next(alice)
-	next(bob)
-	bob.send((e, N))
-
-	x0, x1 = next(alice)
-	v = bob.send((x0, x1))
-
-	m0k, m1k = alice.send(v)
-
-	mb = bob.send((m0k, m1k))
-
-	print('mb', mb)
 

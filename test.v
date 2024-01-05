@@ -6,10 +6,11 @@ module test(x, y, out);
     // input y;
     output out;
 
-    // reg [32:0] tmp;
+    reg [31:0] tmp;
     // wire tmp;
     initial begin
-        out = x*y==1;
+        tmp = x*y;
+        out = tmp == 1;
     end
     // assign out = tmp;
 endmodule
