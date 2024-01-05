@@ -1,6 +1,6 @@
 read_verilog test.v
 synth
-abc -g AND
+abc -g gates
 splitnets -ports -format _
 clean_zerowidth
 clean -purge

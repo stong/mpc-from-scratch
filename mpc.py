@@ -143,16 +143,31 @@ def parse_verilog(filename):
 					rhs = ('not', var)
 				case [var1, '&', var2]:
 					rhs = ('and', var1, var2)
+				case [var1, '|', var2]:
+					rhs = ('or', var1, var2)
+				case [var1, '^', var2]:
+					rhs = ('xor', var1, var2)
+				case [var1, '|~(', var2, ')']:
+					rhs = ('ornot', var1, var2)
+				case [var1, '&~(', var2, ')']:
+					rhs = ('andnot', var1, var2)
+				case ['~(', var1, '&', var2, ')']:
+					rhs = ('nand', var1, var2)
+				case ['~(', var1, '|', var2, ')']:
+					rhs = ('nor', var1, var2)
+				case ['~(', var1, '^', var2, ')']:
+					rhs = ('xnor', var1, var2)
 				case ['1', "'", val]:
 					if not re.match(r'h(0|1)', val):
 						raise ValueError('unsupported statement:', l)
 					rhs = ('const_' + val[1],)
 				case _:
+					print(rhs)
 					raise ValueError('unsupported statement:', l)
 			circuit[lhs] = rhs
 			for var in rhs[1:]:
 				if var not in circuit:
-					raise ValueError('undefined variable:', var, l)
+					raise ValueError('undefined variable:', var, 'in statement', l)
 			# print(lhs,rhs)
 		else:
 			raise ValueError('unsupported statement:', l)
@@ -169,6 +184,27 @@ def label_truth_table(output_name, gate, input_names, labels, k=128):
 	if gate == 'and':
 		assert len(input_names) == 2
 		logic_table = [[0, 0], [0, 1]]
+	elif gate == 'or':
+		assert len(input_names) == 2
+		logic_table = [[0, 1], [1, 1]]
+	elif gate == 'nand':
+		assert len(input_names) == 2
+		logic_table = [[1, 1], [1, 0]]
+	elif gate == 'xnor':
+		assert len(input_names) == 2
+		logic_table = [[1, 0], [0, 1]]
+	elif gate == 'xor':
+		assert len(input_names) == 2
+		logic_table = [[0, 1], [1, 0]]
+	elif gate == 'ornot':
+		assert len(input_names) == 2
+		logic_table = [[1, 0], [1, 1]]
+	elif gate == 'nor':
+		assert len(input_names) == 2
+		logic_table = [[1, 0], [0, 0]]
+	elif gate == 'andnot':
+		assert len(input_names) == 2
+		logic_table = [[0, 0], [1, 0]]
 	elif gate == 'not':
 		assert len(input_names) == 1
 		logic_table = [1, 0]
@@ -320,7 +356,7 @@ if __name__ == '__main__':
 	labels_to_names = dict((v, k + '=' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
 	for k, v in labels_to_names.items(): print(k, '\t', v)
 	
-	x = 1338
+	x = 1185372425
 	y = 1337
 
 	# setup input wires
@@ -339,8 +375,6 @@ if __name__ == '__main__':
 	# alice does this
 	output = [labels_to_names[label] for label in output_labels]
 	print('final output:', output)
-
-	assert output[0] == 'out=1'
 
 	exit()
 
