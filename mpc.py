@@ -146,13 +146,13 @@ def parse_verilog(filename):
 				case ['1', "'", val]:
 					if not re.match(r'h(0|1)', val):
 						raise ValueError('unsupported statement:', l)
-					rhs = ('const_' + val[1])
+					rhs = ('const_' + val[1],)
 				case _:
 					raise ValueError('unsupported statement:', l)
 			circuit[lhs] = rhs
 			for var in rhs[1:]:
 				if var not in circuit:
-					raise ValueError('undefined variable:', var)
+					raise ValueError('undefined variable:', var, l)
 			# print(lhs,rhs)
 		else:
 			raise ValueError('unsupported statement:', l)
@@ -169,6 +169,15 @@ def label_truth_table(output_name, gate, input_names, labels, k=128):
 	if gate == 'and':
 		assert len(input_names) == 2
 		logic_table = [[0, 0], [0, 1]]
+	elif gate == 'not':
+		assert len(input_names) == 1
+		logic_table = [1, 0]
+	elif gate == 'const_0':
+		assert len(input_names) == 0
+		logic_table = 0
+	elif gate == 'const_1':
+		assert len(input_names) == 0
+		logic_table = 1
 	else:
 		raise ValueError('unsupported gate', gate)
 	for var in (output_name, *input_names):
@@ -219,7 +228,6 @@ def topoorder(circuit, inputs, outputs):
 	postorder = []
 	visited = set()
 	def visit(wire_name):
-		print(wire_name)
 		if wire_name in visited:
 			return
 		visited.add(wire_name)
@@ -239,21 +247,22 @@ def garble_circuit(circuit, inputs, outputs, k=128):
 	# we topologically order all the wires. there is a valid topological ordering because circuits are acyclic.
 	# by ordering the wires, we can use the indices as unique ids to refer to each wire
 	wires = topoorder(circuit, inputs, outputs)
+	print('topo order:',wires)
 	wire_index = {wire: i for i, wire in enumerate(wires)}
 
 	for wire_name in wires:
 		if wire_name in inputs:
+			print('input wire:', wire_name)
 			garbled_tables.append((None, None)) # this is an input wire, just add a palceholder value
 			continue
 		gate, *input_wire_names = circuit[wire_name]
 		print(wire_name, gate, input_wire_names)
 		labeled_table = label_truth_table(wire_name, gate, input_wire_names, labels, k)
-		print(labeled_table)
 		garbled_table = garble_table(labeled_table)
-		print(garbled_table)
 
+		print('inputs:',input_wire_names)
 		input_wire_indexes = [wire_index[input_wire] for input_wire in input_wire_names]
-		assert all(i < len(garbled_table) for i in input_wire_indexes)
+		assert all(i < len(garbled_tables) for i in input_wire_indexes)
 		garbled_tables.append((garbled_table, input_wire_indexes))
 	
 	assert len(garbled_tables) == len(wires)
@@ -270,16 +279,17 @@ def eval_garbled_circuit(garbled_tables, circuit_input_labels, output_wire_index
 
 		for row in garbled_table:
 			c, nonce = row
-			gate_input_labels = [evaluated_gates[i] for i in input_wire_indexes]
+			gate_input_labels = [evaluated_gates[index] for index in input_wire_indexes]
 			try:
 				output_label = symmetric_dec(gate_input_labels, c, nonce)
 			except ValueError: # incorrect padding
 				continue
-			print('evaluated gate', i, '=', output_label)
 			evaluated_gates.append(output_label)
 			break
 		else:
-			print('dont have this table')
+			raise ValueError('unable to decrypt garbled table', i)
+		
+		print('evaluated gate', i, '=', output_label)
 
 	assert len(evaluated_gates) == len(garbled_tables)
 
@@ -295,9 +305,9 @@ if __name__ == '__main__':
 
 	# {wire_name: [label_0, label_1], ...} -> {label_0: wire_name=0, label_1: wire_name=1, ...}
 	labels_to_names = dict((v, k + '=' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
-	print(labels_to_names)
+	for k, v in labels_to_names.items(): print(k, '\t', v)
 	
-	input_values = {'x': 1, 'y': 1}
+	input_values = {'x': 0, 'y': 1}
 	# map of wire_index -> given label
 	input_labels = {wire_index[wire]: labels[wire][input_values[wire]] for wire in inputs}
 
