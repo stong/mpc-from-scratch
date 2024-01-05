@@ -9,7 +9,7 @@ module test(x, y, out);
     // reg [32:0] tmp;
     // wire tmp;
     initial begin
-        out = x+y;
+        out = x&y;
     end
     // assign out = tmp;
 endmodule

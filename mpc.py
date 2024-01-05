@@ -30,8 +30,10 @@ def rabin_miller_fast(n, k=40):
 			return False
 	return rabin_miller(n, k)
 
+import Crypto.Util.number
+
 def randbits(n):
-	return random.randrange(2**(n-1), 2**n-1)
+	return random.randrange(2**(n-1), 2**n-1) # todo: replace with Crypto.Util.number.getRandomNBitInteger(n)
 
 def gen_safe_prime(n):
 	while True:
@@ -77,6 +79,8 @@ def gen_rsa_params(n=2048):
 	d = modinv(e, phi)
 	return e,d,N
 
+# note: textbook rsa has issues, padding should be used
+
 def oblivious_transfer_alice(m0, m1, n=2048):
 	e, d, N = gen_rsa_params(n)
 	if m0 >= N or m1 >= N:
@@ -107,7 +111,6 @@ def parse_verilog(filename):
 	circuit = {} # map from wire name -> (gate, gate operands...)
 	inputs = []
 	outputs = []
-
 	import re
 	filecontents = open(filename, 'r').read()
 	for l in filecontents.split(';'):
@@ -159,15 +162,85 @@ def parse_verilog(filename):
 			raise ValueError('wire was never assigned:', wire)
 	return circuit, inputs, outputs
 
+import itertools
+import functools
+import operator
+
+def label_truth_table(output_name, gate, input_names, k=128):
+	if gate == 'and':
+		assert len(input_names) == 2
+		logic_table = [[0, 0], [0, 1]]
+	else:
+		raise ValueError('unsupported gate', gate)
+	labels = {}
+	for var in (output_name, *input_names):
+		labels[var] = [randbits(k), randbits(k)] # 0 and 1 labels for each var
+	labeled_table = []
+	for inp_values in itertools.product((0,1), repeat=len(input_names)):
+		output_value = functools.reduce(operator.getitem, inp_values, logic_table)
+		output_label = labels[output_name][output_value]
+		input_labels = [labels[input_names[i]][v] for i, v in enumerate(inp_values)]
+		labeled_table.append((output_label, input_labels))
+	return labeled_table, labels
+
+def combine_keys(keys, k=128):
+	from Crypto.Hash import SHA3_256
+	h = SHA3_256.new()
+	for ki in keys:
+		h.update(ki.to_bytes(k//8, 'big'))
+	return h.digest()
+
+def symmetric_enc(keys, x, k=128):
+	from Crypto.Cipher import AES
+	from Crypto.Util.Padding import pad
+	key = combine_keys(keys, k)
+	cipher = AES.new(key, Crypto.Cipher.AES.MODE_CTR)
+	c = cipher.encrypt(pad(x.to_bytes(k//8, 'big'), 16))
+	nonce = cipher.nonce
+	return c, nonce
+
+def symmetric_dec(keys, c, nonce, k=128):
+	from Crypto.Cipher import AES
+	from Crypto.Util.Padding import unpad
+	key = combine_keys(keys, k)
+	cipher = AES.new(key, Crypto.Cipher.AES.MODE_CTR, nonce=nonce)
+	x = unpad(cipher.decrypt(c), 16)
+	return int.from_bytes(x, 'big')
+
+def garble_table(labeled_table, k=128):
+	result = []
+	for row in labeled_table:
+		output_label, input_labels = row
+		c, nonce = symmetric_enc(input_labels, output_label, k)
+		result.append((c, nonce))
+	print(result)
+	random.shuffle(result) # this isn't a secure shuffle
+	print(result)
+	return result
 
 def garbled_circuit(n=2048, k=128):
 	parse_verilog('out.v')
-	pass
+	labeled_table, labels = label_truth_table('out', 'and', ['x', 'y'])
+	print(labeled_table, labels)
+	garbled_table = garble_table(labeled_table)
+	
+	labels_to_names = dict((v, k + '_' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
+
+
+	for row in garbled_table:
+		c, nonce = row
+		try:
+			output_label = symmetric_dec([labels['x'][1], labels['y'][1]], c, nonce)
+		except ValueError: # incorrect padding
+			continue
+		print(output_label)
+		print(labels_to_names[output_label])
+
 
 if __name__ == '__main__':
 	garbled_circuit()
 	exit()
-	
+
 	m0 = 9001
 	m1 = 1337
 
