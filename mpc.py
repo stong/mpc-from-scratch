@@ -23,17 +23,17 @@ def rabin_miller(n, k=40):
             return False
     return True
 
-SMALL_PRIMES = list(map(int, map(str.strip, open('primes.txt','r').readlines())))
+SMALL_PRIMES = list(map(int, map(str.strip, open('primes.txt','r').readlines()))) # gen with sieve.py
 def rabin_miller_fast(n, k=40):
 	for p in SMALL_PRIMES:
 		if n % p == 0:
 			return False
 	return rabin_miller(n, k)
 
-import Crypto.Util.number
 
 def randbits(n):
-	return random.randrange(2**(n-1), 2**n-1) # todo: replace with Crypto.Util.number.getRandomNBitInteger(n)
+	import Crypto.Util.number
+	return Crypto.Util.number.getRandomNBitInteger(n)
 
 def gen_safe_prime(n):
 	while True:
@@ -260,7 +260,7 @@ def symmetric_enc(keys, x, k=128):
 	from Crypto.Util.Padding import pad
 	key = combine_keys(keys, k)
 	x = x.to_bytes(k//8, 'big')
-	cipher = AES.new(key, Crypto.Cipher.AES.MODE_GCM)
+	cipher = AES.new(key, AES.MODE_GCM)
 	ciphertext, tag = cipher.encrypt_and_digest(pad(x, 16))
 	nonce = cipher.nonce
 	return ciphertext, tag, nonce
@@ -269,7 +269,7 @@ def symmetric_dec(keys, ciphertext, tag, nonce, k=128):
 	from Crypto.Cipher import AES
 	from Crypto.Util.Padding import unpad
 	key = combine_keys(keys, k)
-	cipher = AES.new(key, Crypto.Cipher.AES.MODE_GCM, nonce=nonce)
+	cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
 	x = unpad(cipher.decrypt_and_verify(ciphertext, tag), 16)
 	x = int.from_bytes(x, 'big')
 	assert x.bit_length() <= k
