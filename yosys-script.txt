@@ -1,7 +1,7 @@
 read_verilog test.v
 synth
 abc -g AND
-splitnets -ports -format __:
+splitnets -ports -format _
 clean_zerowidth
 clean -purge
 write_verilog -simple-lhs -noattr out.v

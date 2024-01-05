@@ -198,29 +198,39 @@ def combine_keys(keys, k=128):
 		h.update(ki.to_bytes(k//8, 'big'))
 	return h.digest()
 
+def sha3(data):
+	from Crypto.Hash import SHA3_256
+	h = SHA3_256.new()
+	h.update(data)
+	return h.digest()
+
 def symmetric_enc(keys, x, k=128):
 	from Crypto.Cipher import AES
 	from Crypto.Util.Padding import pad
 	key = combine_keys(keys, k)
-	cipher = AES.new(key, Crypto.Cipher.AES.MODE_CTR)
-	c = cipher.encrypt(pad(x.to_bytes(k//8, 'big'), 16))
+	x = x.to_bytes(k//8, 'big')
+	cipher = AES.new(key, Crypto.Cipher.AES.MODE_GCM)
+	ciphertext, tag = cipher.encrypt_and_digest(pad(x, 16))
 	nonce = cipher.nonce
-	return c, nonce
+	return ciphertext, tag, nonce
 
-def symmetric_dec(keys, c, nonce, k=128):
+def symmetric_dec(keys, ciphertext, tag, nonce, k=128):
 	from Crypto.Cipher import AES
 	from Crypto.Util.Padding import unpad
 	key = combine_keys(keys, k)
-	cipher = AES.new(key, Crypto.Cipher.AES.MODE_CTR, nonce=nonce)
-	x = unpad(cipher.decrypt(c), 16)
-	return int.from_bytes(x, 'big')
+	cipher = AES.new(key, Crypto.Cipher.AES.MODE_GCM, nonce=nonce)
+	x = unpad(cipher.decrypt_and_verify(ciphertext, tag), 16)
+	x = int.from_bytes(x, 'big')
+	print(x)
+	assert x.bit_length() <= k
+	return x
 
 def garble_table(labeled_table, k=128):
 	result = []
 	for row in labeled_table:
 		output_label, input_labels = row
-		c, nonce = symmetric_enc(input_labels, output_label, k)
-		result.append((c, nonce))
+		c, tag, nonce = symmetric_enc(input_labels, output_label, k)
+		result.append((c, tag, nonce))
 	random.shuffle(result) # this isn't a secure shuffle
 	return result
 
@@ -278,10 +288,10 @@ def eval_garbled_circuit(garbled_tables, circuit_input_labels, output_wire_index
 			continue
 
 		for row in garbled_table:
-			c, nonce = row
+			c, tag, nonce = row
 			gate_input_labels = [evaluated_gates[index] for index in input_wire_indexes]
 			try:
-				output_label = symmetric_dec(gate_input_labels, c, nonce)
+				output_label = symmetric_dec(gate_input_labels, c, tag, nonce)
 			except ValueError: # incorrect padding
 				continue
 			evaluated_gates.append(output_label)
@@ -296,6 +306,9 @@ def eval_garbled_circuit(garbled_tables, circuit_input_labels, output_wire_index
 	output_labels = [evaluated_gates[i] for i in output_wire_indexes]
 	return output_labels
 
+def wire_values(wire_name, value, bitsize):
+	bits = bin(value)[2:].zfill(32)
+	return {f"{wire_name}_{i}": int(bit) for i, bit in enumerate(reversed(bits))}
 
 if __name__ == '__main__':
 	circuit, inputs, outputs = parse_verilog('out.v')
@@ -307,7 +320,13 @@ if __name__ == '__main__':
 	labels_to_names = dict((v, k + '=' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
 	for k, v in labels_to_names.items(): print(k, '\t', v)
 	
-	input_values = {'x': 0, 'y': 1}
+	x = 1338
+	y = 1337
+
+	# setup input wires
+	input_values = {**wire_values('x', x, 32), **wire_values('y', y, 32)}
+	print('input values:', input_values)
+
 	# map of wire_index -> given label
 	input_labels = {wire_index[wire]: labels[wire][input_values[wire]] for wire in inputs}
 
@@ -315,11 +334,13 @@ if __name__ == '__main__':
 	
 	# bob does this
 	output_labels = eval_garbled_circuit(garbled_tables, input_labels, output_indexes)
-	print('output labels', output_labels)
+	print('output labels:', output_labels)
 
 	# alice does this
 	output = [labels_to_names[label] for label in output_labels]
-	print('final output', output)
+	print('final output:', output)
+
+	assert output[0] == 'out=1'
 
 	exit()
 
