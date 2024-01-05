@@ -249,12 +249,6 @@ def combine_keys(keys, k=128):
 		h.update(ki.to_bytes(k//8, 'big'))
 	return h.digest()
 
-def sha3(data):
-	from Crypto.Hash import SHA3_256
-	h = SHA3_256.new()
-	h.update(data)
-	return h.digest()
-
 def symmetric_enc(keys, x, k=128):
 	from Crypto.Cipher import AES
 	from Crypto.Util.Padding import pad

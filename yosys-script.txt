@@ -1,4 +1,4 @@
-read_verilog test.v
+read_verilog circuit.v
 synth
 abc -g gates
 splitnets -ports -format _
