@@ -74,8 +74,6 @@ def gen_rsa_params(n=2048):
 	N = p * q
 	e = 65537
 	phi = (p-1)*(q-1)
-	g, _, _ = egcd(phi, e) # ensure phi and e are coprime
-	assert g == 1
 	d = modinv(e, phi)
 	return e,d,N
 
@@ -103,7 +101,73 @@ def oblivious_transfer_bob(b, n=2048):
 	mb = ((m0k, m1k)[b] - k) % N
 	yield mb
 
+
+# quick and dirty verilog parser
+def parse_verilog(filename):
+	circuit = {} # map from wire name -> (gate, gate operands...)
+	inputs = []
+	outputs = []
+
+	import re
+	filecontents = open(filename, 'r').read()
+	for l in filecontents.split(';'):
+		if not l: continue
+		l = re.sub(r"/\*.*?\*/", '', l, flags=re.DOTALL) # remove comments
+		l = re.sub(r'//.*$', '', l, flags=re.MULTILINE) # remove comments
+		l = l.strip()
+		tokens = l.split(' ')
+		if tokens[0] == 'module': continue
+		if tokens[0] == 'endmodule': continue
+		tokens[-1] = tokens[-1].rstrip(';')
+		if tokens[0] in ('wire', 'output', 'input'): # declaration
+			if len(tokens) != 2:
+				raise ValueError('unsupported statement:', l)
+			typ, name = tokens
+			if typ == 'input':
+				inputs.append(name)
+			elif typ == 'output':
+				outputs.append(name)
+			circuit[name] = None
+		elif tokens[0] == 'assign': # assignment
+			if tokens[2] != '=':
+				raise ValueError('unsupported statement:', l)
+			lhs = tokens[1]
+			if '[' in lhs or ':' in lhs:
+				raise ValueError('unsupported statement:', l)
+			rhs = [*filter(bool,re.split(r'\b',''.join(tokens[3:])))]
+			match rhs:
+				case ['~', var]:
+					rhs = ('not', var)
+				case [var1, '&', var2]:
+					rhs = ('and', var1, var2)
+				case ['1', "'", val]:
+					if not re.match(r'h(0|1)', val):
+						raise ValueError('unsupported statement:', l)
+					rhs = ('const', int(val[1]))
+				case _:
+					raise ValueError('unsupported statement:', l)
+			circuit[lhs] = rhs
+			if rhs[0] != 'const':
+				for var in rhs[1:]:
+					if var not in circuit:
+						raise ValueError('undefined variable:', var)
+			# print(lhs,rhs)
+		else:
+			raise ValueError('unsupported statement:', l)
+	for wire, value in circuit.items():
+		if not value and wire not in inputs:
+			raise ValueError('wire was never assigned:', wire)
+	return circuit, inputs, outputs
+
+
+def garbled_circuit(n=2048, k=128):
+	parse_verilog('out.v')
+	pass
+
 if __name__ == '__main__':
+	garbled_circuit()
+	exit()
+	
 	m0 = 9001
 	m1 = 1337
 
