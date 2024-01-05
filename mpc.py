@@ -108,7 +108,7 @@ def oblivious_transfer_bob(b, n=2048):
 
 # quick and dirty verilog parser
 def parse_verilog(filename):
-	circuit = {} # map from wire name -> (gate, gate operands...)
+	circuit = {} # map from wire name -> (gate, name of the wires that are inputs to the gate...)
 	inputs = []
 	outputs = []
 	import re
@@ -146,14 +146,13 @@ def parse_verilog(filename):
 				case ['1', "'", val]:
 					if not re.match(r'h(0|1)', val):
 						raise ValueError('unsupported statement:', l)
-					rhs = ('const', int(val[1]))
+					rhs = ('const_' + val[1])
 				case _:
 					raise ValueError('unsupported statement:', l)
 			circuit[lhs] = rhs
-			if rhs[0] != 'const':
-				for var in rhs[1:]:
-					if var not in circuit:
-						raise ValueError('undefined variable:', var)
+			for var in rhs[1:]:
+				if var not in circuit:
+					raise ValueError('undefined variable:', var)
 			# print(lhs,rhs)
 		else:
 			raise ValueError('unsupported statement:', l)
@@ -166,22 +165,22 @@ import itertools
 import functools
 import operator
 
-def label_truth_table(output_name, gate, input_names, k=128):
+def label_truth_table(output_name, gate, input_names, labels, k=128):
 	if gate == 'and':
 		assert len(input_names) == 2
 		logic_table = [[0, 0], [0, 1]]
 	else:
 		raise ValueError('unsupported gate', gate)
-	labels = {}
 	for var in (output_name, *input_names):
-		labels[var] = [randbits(k), randbits(k)] # 0 and 1 labels for each var
+		if var not in labels:
+			labels[var] = [randbits(k), randbits(k)] # 0 and 1 labels for each var
 	labeled_table = []
 	for inp_values in itertools.product((0,1), repeat=len(input_names)):
 		output_value = functools.reduce(operator.getitem, inp_values, logic_table)
 		output_label = labels[output_name][output_value]
 		input_labels = [labels[input_names[i]][v] for i, v in enumerate(inp_values)]
 		labeled_table.append((output_label, input_labels))
-	return labeled_table, labels
+	return labeled_table
 
 def combine_keys(keys, k=128):
 	from Crypto.Hash import SHA3_256
@@ -213,32 +212,105 @@ def garble_table(labeled_table, k=128):
 		output_label, input_labels = row
 		c, nonce = symmetric_enc(input_labels, output_label, k)
 		result.append((c, nonce))
-	print(result)
 	random.shuffle(result) # this isn't a secure shuffle
-	print(result)
 	return result
 
-def garbled_circuit(n=2048, k=128):
-	parse_verilog('out.v')
-	labeled_table, labels = label_truth_table('out', 'and', ['x', 'y'])
-	print(labeled_table, labels)
-	garbled_table = garble_table(labeled_table)
+def topoorder(circuit, inputs, outputs):
+	postorder = []
+	visited = set()
+	def visit(wire_name):
+		print(wire_name)
+		if wire_name in visited:
+			return
+		visited.add(wire_name)
+		if wire_name not in inputs:
+			gate, *input_wire_names = circuit[wire_name]
+			for input_wire in input_wire_names:
+				visit(input_wire)
+		postorder.append(wire_name)
+	for input_wire in outputs:
+		visit(input_wire)
+	return postorder # note: dont need to reverse for topo b.c nodes point to their dependencies
+
+def garble_circuit(circuit, inputs, outputs, k=128):
+	labels = {}
+	garbled_tables = []
 	
-	labels_to_names = dict((v, k + '_' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
+	# we topologically order all the wires. there is a valid topological ordering because circuits are acyclic.
+	# by ordering the wires, we can use the indices as unique ids to refer to each wire
+	wires = topoorder(circuit, inputs, outputs)
+	wire_index = {wire: i for i, wire in enumerate(wires)}
 
-
-	for row in garbled_table:
-		c, nonce = row
-		try:
-			output_label = symmetric_dec([labels['x'][1], labels['y'][1]], c, nonce)
-		except ValueError: # incorrect padding
+	for wire_name in wires:
+		if wire_name in inputs:
+			garbled_tables.append((None, None)) # this is an input wire, just add a palceholder value
 			continue
-		print(output_label)
-		print(labels_to_names[output_label])
+		gate, *input_wire_names = circuit[wire_name]
+		print(wire_name, gate, input_wire_names)
+		labeled_table = label_truth_table(wire_name, gate, input_wire_names, labels, k)
+		print(labeled_table)
+		garbled_table = garble_table(labeled_table)
+		print(garbled_table)
+
+		input_wire_indexes = [wire_index[input_wire] for input_wire in input_wire_names]
+		assert all(i < len(garbled_table) for i in input_wire_indexes)
+		garbled_tables.append((garbled_table, input_wire_indexes))
+	
+	assert len(garbled_tables) == len(wires)
+
+	return garbled_tables, labels, wire_index
+
+def eval_garbled_circuit(garbled_tables, circuit_input_labels, output_wire_indexes):
+	evaluated_gates = [] # holds an array of the output wire's decrypted label as we progressively evaluate the circuit
+
+	for i, (garbled_table, input_wire_indexes) in enumerate(garbled_tables):
+		if i in circuit_input_labels: # this is an input wire
+			evaluated_gates.append(circuit_input_labels[i])
+			continue
+
+		for row in garbled_table:
+			c, nonce = row
+			gate_input_labels = [evaluated_gates[i] for i in input_wire_indexes]
+			try:
+				output_label = symmetric_dec(gate_input_labels, c, nonce)
+			except ValueError: # incorrect padding
+				continue
+			print('evaluated gate', i, '=', output_label)
+			evaluated_gates.append(output_label)
+			break
+		else:
+			print('dont have this table')
+
+	assert len(evaluated_gates) == len(garbled_tables)
+
+	output_labels = [evaluated_gates[i] for i in output_wire_indexes]
+	return output_labels
 
 
 if __name__ == '__main__':
-	garbled_circuit()
+	circuit, inputs, outputs = parse_verilog('out.v')
+
+	# alice does this
+	garbled_tables, labels, wire_index = garble_circuit(circuit, inputs, outputs)
+
+	# {wire_name: [label_0, label_1], ...} -> {label_0: wire_name=0, label_1: wire_name=1, ...}
+	labels_to_names = dict((v, k + '=' + str(i)) for k, v01 in labels.items() for i, v in enumerate(v01))
+	print(labels_to_names)
+	
+	input_values = {'x': 1, 'y': 1}
+	# map of wire_index -> given label
+	input_labels = {wire_index[wire]: labels[wire][input_values[wire]] for wire in inputs}
+
+	output_indexes = [wire_index[wire] for wire in outputs]
+	
+	# bob does this
+	output_labels = eval_garbled_circuit(garbled_tables, input_labels, output_indexes)
+	print('output labels', output_labels)
+
+	# alice does this
+	output = [labels_to_names[label] for label in output_labels]
+	print('final output', output)
+
 	exit()
 
 	m0 = 9001
