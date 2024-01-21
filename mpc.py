@@ -1,4 +1,10 @@
+import os
 import random
+
+from Crypto.Util.number import getRandomNBitInteger, getPrime, long_to_bytes, bytes_to_long
+from Crypto.Hash import SHA3_256
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
 
 # Primality testing
 def rabin_miller(n, k=40):
@@ -32,8 +38,7 @@ def rabin_miller_fast(n, k=40):
 
 
 def randbits(n):
-    import Crypto.Util.number
-    return Crypto.Util.number.getRandomNBitInteger(n)
+    return getRandomNBitInteger(n)
 
 def gen_prime(n):
     while True:
@@ -44,9 +49,7 @@ def gen_prime(n):
         print('.', end='', flush=True)
 
 def gen_prime_fast(n):
-    from Crypto.Util import number
-    import os
-    return number.getPrime(n, os.urandom)
+    return getPrime(n, os.urandom)
 
 gen_prime = gen_prime_fast
 
@@ -237,37 +240,28 @@ def label_truth_table(output_name, gate, input_names, labels, k=128):
     return labeled_table
 
 def combine_keys(keys, k=128):
-    from Crypto.Hash import SHA3_256
     h = SHA3_256.new()
     for ki in keys:
-        h.update(ki.to_bytes(k//8, 'big'))
+        h.update(long_to_bytes(ki))
     return h.digest()
 
-def symmetric_enc(keys, x, k=128):
-    from Crypto.Cipher import AES
-    from Crypto.Util.Padding import pad
-    key = combine_keys(keys, k)
-    x = x.to_bytes(k//8, 'big')
+def symmetric_enc(key, x):
     cipher = AES.new(key, AES.MODE_GCM)
-    ciphertext, tag = cipher.encrypt_and_digest(pad(x, 16))
+    ciphertext, tag = cipher.encrypt_and_digest(pad(long_to_bytes(x), 16))
     nonce = cipher.nonce
     return ciphertext, tag, nonce
 
-def symmetric_dec(keys, ciphertext, tag, nonce, k=128):
-    from Crypto.Cipher import AES
-    from Crypto.Util.Padding import unpad
-    key = combine_keys(keys, k)
+def symmetric_dec(key, ciphertext, tag, nonce):
     cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)
-    x = unpad(cipher.decrypt_and_verify(ciphertext, tag), 16)
-    x = int.from_bytes(x, 'big')
-    assert x.bit_length() <= k
+    x = bytes_to_long(unpad(cipher.decrypt_and_verify(ciphertext, tag), 16))
     return x
 
-def garble_table(labeled_table, k=128):
+def garble_table(labeled_table):
     result = []
     for row in labeled_table:
         output_label, input_labels = row
-        c, tag, nonce = symmetric_enc(input_labels, output_label, k)
+        key = combine_keys(input_labels)
+        c, tag, nonce = symmetric_enc(key, output_label)
         result.append((c, tag, nonce))
     random.shuffle(result) # this isn't a secure shuffle
     return result
@@ -326,8 +320,9 @@ def eval_garbled_circuit(garbled_tables, circuit_input_labels, output_wire_index
         for row in garbled_table:
             c, tag, nonce = row
             gate_input_labels = [evaluated_gates[index] for index in input_wire_indexes]
+            key = combine_keys(gate_input_labels)
             try:
-                output_label = symmetric_dec(gate_input_labels, c, tag, nonce)
+                output_label = symmetric_dec(key, c, tag, nonce)
             except ValueError: # incorrect padding
                 continue
             evaluated_gates.append(output_label)
