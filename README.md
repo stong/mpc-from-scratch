@@ -1,3 +1,7 @@
+# Read the full blog post here
+
+https://www.zellic.io/blog/mpc-from-scratch/
+
 # MPC from Scratch
 
 A toy, educational implementation of [Garbled Circuit protocol](https://en.wikipedia.org/wiki/Garbled_circuit) from scratch in Python
